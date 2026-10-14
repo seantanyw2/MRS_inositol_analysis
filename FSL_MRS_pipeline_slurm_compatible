@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# set i to be the first input
+i=${1}
+echo "===> Starting processing of ${i}"
+
+# Base directory where all subject directories are located
+base_dir="path/to/base/dir"
+
+# Loop through each session
+for session_dir in "${i}"/*/ses-*; do
+
+    # Identify if a session has the mrs directory, if yes cd into it
+    if [ -d "$session_dir/mrs" ]; then
+        cd $session_dir/mrs
+        echo "succesful cd into mrs"
+
+        # Identify if within mrs directory there is a frontal mrs, if yes then start pipeline
+        frontal_mrs=$(ls -d *slws64_nuc-1h_loc-frontal*fid 2>/dev/null)
+
+        if [ -d "$frontal_mrs" ]; then
+            echo "there is a frontal scan"
+            echo $frontal_mrs
+
+            # convert dicom to nifti and move into mrs-frontal directory
+            spec2nii dicom $frontal_mrs -t DIM_DYN -o mrs-frontal-fsl
+            cd mrs-frontal-fsl
+
+            # rename nifti output to standardised names
+            mv sLASER_WS64_Frontal_ecc.nii.gz ecc.nii.gz
+            mv sLASER_WS64_Frontal.nii.gz metab_raw.nii.gz
+            mv sLASER_WS64_Frontal_quant.nii.gz wref_raw.nii.gz
+
+            # use fsl_mrs preprocessing
+            fsl_mrs_preproc --output fsl_mrs_preproc --data metab_raw.nii.gz --reference wref_raw.nii.gz --ecc ecc.nii.gz --hlsvd --report --overwrite
+
+            # use fsl_mrs for fitting
+            fsl_mrs --data fsl_mrs_preproc/metab.nii.gz --basis $base_dir/sead_3T_28ms_28April2014.BASIS --output fsl_mrs_fit --report
+
+            # check to see if there is a T1 scan for use in quantification
+            frontal_anat=$(ls -d $session_dir/anat/*mpragesag_rec-nd_run-01_T1w.nii.gz 2>/dev/null)
+            echo $frontal_anat
+
+            # if there is a T1 scan use svs segment to get contribution of different tissues for quantification,
+            # with segmentation.json use fsl_mrs to quantify
+            if [ -e "$frontal_anat" ]; then
+                svs_segment -t $frontal_anat fsl_mrs_preproc/metab.nii.gz
+                fsl_mrs --data fsl_mrs_preproc/metab.nii.gz --basis $base_dir/sead_3T_28ms_28April2014.BASIS --output fsl_mrs_quant --h2o fsl_mrs_preproc/wref.nii.gz --tissue_frac segmentation.json --t1 $frontal_anat --report
+            fi
+        fi
+    fi
+done
